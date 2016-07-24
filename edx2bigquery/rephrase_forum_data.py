@@ -24,6 +24,7 @@ from path import path
 from edx2course_axis import date_parse
 import bqutil
 import gsutil
+from remove_pii import hashfn
 
 sfn = 'schema_forum.json'
 
@@ -31,7 +32,11 @@ mypath = os.path.dirname(os.path.realpath(__file__))
 SCHEMA = json.loads(open('%s/schemas/%s' % (mypath, sfn)).read())['forum']
 SCHEMA_DICT = schema2dict(SCHEMA)
 
-def do_rephrase(data, do_schema_check=True, linecnt=0):
+def do_rephrase(data, do_schema_check=True, linecnt=0, remove_pii=False):
+
+    if remove_pii==True:
+        data['author_id'] = hashfn(data['author_id'], 'author_id')
+        data['author_username'] = hashfn(data['author_username'], 'author_username')
 
     if '_id' in data:
         data['mongoid'] = data['_id']['$oid']
@@ -140,7 +145,7 @@ def do_rephrase(data, do_schema_check=True, linecnt=0):
         sys.stderr.write(traceback.format_exc())
         return
 
-def do_rephrase_line(line, linecnt=0):
+def do_rephrase_line(line, linecnt=0, remove_pii=False):
     try:
         data = json.loads(line)
     except Exception as err:
@@ -148,7 +153,7 @@ def do_rephrase_line(line, linecnt=0):
         return
 
     try:
-        do_rephrase(data, do_schema_check=True, linecnt=linecnt)
+        do_rephrase(data, do_schema_check=True, linecnt=linecnt, remove_pii=remove_pii)
     except Exception as err:
         sys.stderr.write('[%d] oops, err=%s, bad log line %s\n' % (linecnt, str(err), line))
         sys.stderr.write(traceback.format_exc())
@@ -163,6 +168,7 @@ def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data",
                                    datedir=None, 
                                    do_gs_copy=False,
                                    use_dataset_latest=False,
+                                   remove_pii=False,
                                    ):
     
     print "Loading SQL for course %s into BigQuery (start: %s)" % (course_id, datetime.datetime.now())
@@ -207,7 +213,7 @@ def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data",
     ofp = gzip.GzipFile('tmp.json.gz', 'w')
     for line in fp:
         cnt += 1
-        newline = do_rephrase_line(line, linecnt=cnt)
+        newline = do_rephrase_line(line, linecnt=cnt, remove_pii=remove_pii)
         ofp.write(newline)
     ofp.close()
 

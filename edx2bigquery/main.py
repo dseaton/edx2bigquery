@@ -5,7 +5,6 @@
 
 import os
 import sys
-
 import argparse
 import json
 import traceback
@@ -16,6 +15,7 @@ from path import path
 
 from argparse import RawTextHelpFormatter
 from collections import OrderedDict
+import uuid
 
 CURDIR = path(os.path.abspath(os.curdir))
 if os.path.exists(CURDIR / 'edx2bigquery_config.py'):
@@ -251,11 +251,15 @@ def setup_sql(param, args, steps, course_id=None):
     if sqlall or 'load_forum' in steps:
         import rephrase_forum_data
         try:
+            print "\n\n"
+            print args.remove_pii
+            print "\n\n"
             rephrase_forum_data.rephrase_forum_json_for_course(course_id,
                                                                gsbucket=edx2bigquery_config.GS_BUCKET,
                                                                basedir=param.the_basedir,
                                                                datedir=param.the_datedir,
                                                                use_dataset_latest=param.use_dataset_latest,
+                                                               remove_pii=args.remove_pii
                                                                )
         except Exception as err:
             print err
@@ -411,6 +415,7 @@ def daily_logs(param, args, steps, course_id=None, verbose=True, wait=False):
                                        dynamic_dates=args.dynamic_dates,
                                        timezone=timezone,
                                        logfn_keepdir=args.logfn_keepdir,
+                                       remove_pii=args.remove_pii
             )
 
     if 'logs2gs' in steps:
@@ -1440,8 +1445,10 @@ check_for_duplicates        : check list of courses for duplicates
     parser.add_argument("--skip-last-day", help="skip last day of tracking log data in processing pcday, to avoid partial-day data contamination", action="store_true")
     parser.add_argument("--gzip", help="compress the output file (e.g. for get_course_data)", action="store_true")
     parser.add_argument('courses', nargs = '*', help = 'courses or course directories, depending on the command')
+    parser.add_argument('--remove-pii', help = 'Removes PII during Waldofy and Rephrase Logs steps - must be called individually', action="store_true")
     
     args = parser.parse_args()
+
     if args.verbose:
         sys.stderr.write("command = %s\n" % args.command)
         sys.stderr.flush()
@@ -1468,6 +1475,8 @@ check_for_duplicates        : check list of courses for duplicates
     param.max_parallel = args.max_parallel
     param.submit_condor = args.submit_condor
     param.skip_log_loading = args.skip_log_loading
+    param.hashpwd = getattr(edx2bigquery_config, "HASHPWD", None)
+    param.hashint = getattr(edx2bigquery_config, "HASHINT", None)
 
     # default end date for person_course
     try:
@@ -1503,7 +1512,6 @@ check_for_duplicates        : check list of courses for duplicates
         sys.exit(0)
 
     #-----------------------------------------------------------------------------            
-
     if (args.command=='mongo2gs'):
         from extract_logs_mongo2gs import  extract_logs_mongo2gs
         for course_id in get_course_ids(args):
@@ -1601,7 +1609,22 @@ check_for_duplicates        : check list of courses for duplicates
         dirname = args.courses[0]		# directory of unpacked SQL data from edX
         args.courses = args.courses[1:]		# remove first element, which was dirname
         courses = get_course_ids(args)
+        print dirname, courses, param.the_basedir
         do_waldofication_of_sql.process_directory(dirname, courses, param.the_basedir)
+
+        if (args.remove_pii==True):
+            import remove_pii
+            args.courses = args.courses[1:]     # remove first element, which was dirname
+            courses = get_course_ids(args)
+            # hpw = raw_input('Enter your PII password:').split(':')[-1]
+            # rshift = raw_input('Enter your integer key:').split(':')[-1]
+            # if rshift.isdigit() == False:
+            #     print "key must be an integer!!!"
+            #     sys.exit(111)
+
+            remove_pii.process_directory(courses, param, param.hashpwd, param.hashint)
+            # print get_course_ids(args)
+
 
     elif (args.command=='analyze_course'):
         import analyze_content

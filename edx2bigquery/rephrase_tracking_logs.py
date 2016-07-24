@@ -35,8 +35,19 @@ from math import isnan
 from path import path
 from addmoduleid import add_module_id
 from check_schema_tracking_log import check_schema
+from remove_pii import hashfn
 
-def do_rephrase(data, do_schema_check=True, linecnt=0):
+def do_rephrase(data, do_schema_check=True, linecnt=0, remove_pii=False):
+
+    # Remove PII
+    if remove_pii==True:
+        data['username'] = hashfn(data['username'], 'username')
+        
+        if 'user_id' in data['context'] and data['context']['user_id']:
+            data['context']['user_id'] = hashfn(data['context']['user_id'], 'user_id')
+        
+        if 'user_id' in data['event'] and data['event']['user_id']:
+            data['event']['user_id'] = hashfn(data['event']['user_id'], 'user_id')
 
     # add course_id?
     if 'course_id' not in data:

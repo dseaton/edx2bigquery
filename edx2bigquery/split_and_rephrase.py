@@ -61,7 +61,7 @@ def guess_course_id(data, org="MITx"):
 
 
 def do_split(line, linecnt=0, run_rephrase=True, date=None, do_zip=False, org='MITx', logs_dir=LOGS_DIR,
-             dynamic_dates=False, timezone=None):
+             dynamic_dates=False, timezone=None, remove_pii=False):
     '''
     if dynamic_dates=True, then use the date on each tracking log line for the date string in the filename.
     
@@ -112,7 +112,7 @@ def do_split(line, linecnt=0, run_rephrase=True, date=None, do_zip=False, org='M
         cid = guess_course_id(data, org=org)
 
     if run_rephrase:
-        do_rephrase(data)
+        do_rephrase(data, remove_pii=True)
 
     ofn = cid.replace('/','__')     # determine output filename
     
@@ -138,7 +138,7 @@ def do_split(line, linecnt=0, run_rephrase=True, date=None, do_zip=False, org='M
 
 #-----------------------------------------------------------------------------
 
-def do_file(fn, logs_dir=LOGS_DIR, dynamic_dates=False, timezone=None, logfn_keepdir=False):
+def do_file(fn, logs_dir=LOGS_DIR, dynamic_dates=False, timezone=None, logfn_keepdir=False, remove_pii=False):
     if fn.endswith('.gz'):
         fp = gzip.GzipFile(fn)
         if logfn_keepdir:
@@ -174,7 +174,7 @@ def do_file(fn, logs_dir=LOGS_DIR, dynamic_dates=False, timezone=None, logfn_kee
         cnt += 1
         try:
             newline = do_split(line, linecnt=cnt, run_rephrase=True, date=the_date, do_zip=True, logs_dir=logs_dir,
-                               dynamic_dates=dynamic_dates, timezone=timezone)
+                               dynamic_dates=dynamic_dates, timezone=timezone, remove_pii=remove_pii)
         except Exception as err:
             print "[split_and_rephrase] ===> OOPS, failed err=%s in parsing line %s" % (str(err), line)
             raise
