@@ -112,7 +112,7 @@ def do_split(line, linecnt=0, run_rephrase=True, date=None, do_zip=False, org='M
         cid = guess_course_id(data, org=org)
 
     if run_rephrase:
-        do_rephrase(data, remove_pii=True)
+        do_rephrase(data, remove_pii=False)
 
     ofn = cid.replace('/','__')     # determine output filename
     
