@@ -332,6 +332,7 @@ def process_course(course_id, force_recompute=False, use_dataset_latest=False, e
     PCDAY_SQL_PROBLEM_SELECT = PCDAY_SQL_PROBLEM_EXISTS if problemTableExists else PCDAY_SQL_PROBLEM_DNE
 
     PCDAY_SQL_MID = """
+				 MIN(time) AS first_event,
 				 MAX(time) AS last_event,
 				 AVG( CASE WHEN (TIMESTAMP_TO_USEC(time) - last_time)/1.0E6 > 5*60 THEN NULL ELSE (TIMESTAMP_TO_USEC(time) - last_time)/1.0E6 END ) AS avg_dt,
 				 STDDEV( CASE WHEN (TIMESTAMP_TO_USEC(time) - last_time)/1.0E6 > 5*60 THEN NULL ELSE (TIMESTAMP_TO_USEC(time) - last_time)/1.0E6 END ) AS sdv_dt,
@@ -527,7 +528,7 @@ def process_course(course_id, force_recompute=False, use_dataset_latest=False, e
                                                      use_dataset_latest=use_dataset_latest,
                                                      end_date=end_date,
                                                      get_date_function=gdf,
-                                                     newer_than=datetime.datetime( 2016, 1, 19, 22, 30 ),
+                                                     newer_than=datetime.datetime( 2017, 2, 8, 16, 30 ),
                                                      skip_last_day=skip_last_day)
     
     print "Done with person_course_day for %s (end %s)"  % (course_id, datetime.datetime.now())
@@ -535,6 +536,105 @@ def process_course(course_id, force_recompute=False, use_dataset_latest=False, e
     sys.stdout.flush()
         
 #-----------------------------------------------------------------------------
+
+def compute_person_course_day_trlang_table(course_id, force_recompute=False, use_dataset_latest=False, end_date=None):
+    '''
+    make pcday_trlang_counts for specified course_id
+    
+    This couse table holds all the (username, course_id, date, transcript_language, count)
+    data for a course.
+
+    This is used in computing the modal video transcript language of users
+
+    '''
+    table = 'pcday_trlang_counts'
+
+    SQL = '''
+		SELECT
+		  username,
+		  course_id,
+		  DATE(time) AS date,
+		  LAST(time) AS last_time,
+		  resource,
+		  CASE
+		    WHEN resource_event_type = 'transcript_download' AND prev_event_data IS NOT NULL THEN prev_event_data
+		    WHEN resource_event_type = 'transcript_download'
+		  AND prev_event_data IS NULL THEN 'en'
+		    WHEN resource_event_type = 'transcript_language' THEN resource_event_data
+		    ELSE resource_event_data
+		  END AS resource_event_data,
+		  resource_event_type,
+		  SUM(lang_count) AS langcount
+		FROM (
+		  SELECT
+		    course_id,
+		    username,
+		    resource,
+		    resource_event_data,
+		    resource_event_type,
+		    LAG(time, 1) OVER (PARTITION BY username ORDER BY time) AS prev_time,
+		    LAG(resource_event_type, 1) OVER (PARTITION BY username ORDER BY time) AS prev_event_type,
+		    LAG(resource_event_data, 1) OVER (PARTITION BY username ORDER BY time) AS prev_event_data,
+		    time,
+		    COUNT(*) AS lang_count,
+		    event_type
+		  FROM (
+		    SELECT
+		      time,
+		      course_id,
+		      username,
+		      'video' AS resource,
+		      CASE
+			WHEN module_id IS NOT NULL THEN REGEXP_EXTRACT(module_id, r'.*video/(.*)')                          # Newer data .. May 2016?
+			ELSE REGEXP_EXTRACT(event_type, r'.*;_video;_(.*)\/handler\/transcript\/translation\/.*') END   # Older data
+		      AS resource_id,
+		      CASE
+			WHEN (event_type = 'edx.ui.lms.link_clicked'                                                     # Trasncript Download
+			AND REGEXP_MATCH(JSON_EXTRACT(event, '$.target_url'), r'(.*handler/transcript/download)') ) THEN 'transcript_download'
+			WHEN (REGEXP_MATCH(event_type, "/transcript/translation/.*") ) THEN 'transcript_language'
+			ELSE NULL
+		      END AS resource_event_type,
+		      REGEXP_EXTRACT(event_type, r'.*\/handler\/transcript\/translation\/(.*)') AS resource_event_data,
+		      event_type,
+		    FROM {DATASETS}
+		    WHERE
+		      time > TIMESTAMP("2010-10-01 01:02:03")
+		      AND username != ""
+		      AND ( (NOT event_type CONTAINS "/xblock/"                                                          # Trasncript Download
+			  AND event_type = 'edx.ui.lms.link_clicked'                                                  # Trasncript Download
+			  AND REGEXP_MATCH(JSON_EXTRACT(event, '$.target_url'), r'(.*handler/transcript/download)') ) # Transcript Download
+			OR (REGEXP_MATCH(event_type, "/transcript/translation/.*") )                                   # Transcript Language Toggle
+			)
+		    ORDER BY
+		      time )
+		  GROUP BY
+		    username,
+		    course_id,
+		    resource,
+		    resource_event_data,
+		    resource_event_type,
+		    event_type,
+		    time )
+		GROUP BY
+		  username,
+		  course_id,
+		  date,
+		  resource,
+		  resource_event_data,
+		  resource_event_type,
+		ORDER BY
+		  date ASC,
+		  username ASC
+		  '''
+
+    def gdf(row):
+        return datetime.datetime.strptime(row['date'], '%Y-%m-%d')
+
+    process_tracking_logs.run_query_on_tracking_logs(SQL, table, course_id, force_recompute=force_recompute,
+                                                     use_dataset_latest=use_dataset_latest,
+                                                     end_date=end_date,
+                                                     get_date_function=gdf)
+
 
 def compute_person_course_day_ip_table(course_id, force_recompute=False, use_dataset_latest=False, end_date=None):
     '''

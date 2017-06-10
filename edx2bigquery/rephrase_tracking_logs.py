@@ -268,6 +268,7 @@ def do_rephrase(data, do_schema_check=True, linecnt=0, remove_pii=False):
                              ['event_struct', 'tab_count'],	# 08may16
                              ['event_struct', 'current_tab'],	# 08may16
                              ['event_struct', 'target_tab'],	# 08may16
+                             ['event_struct', 'state', 'has_saved_answers'],	# 06dec2016
                          ])
 
     #----------------------------------------

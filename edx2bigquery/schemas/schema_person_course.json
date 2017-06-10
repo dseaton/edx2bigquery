@@ -36,6 +36,11 @@
             "description": "Boolean flag, indicating that the user earned a certificate in the course"
         },
         {
+            "type": "BOOLEAN",
+            "name": "completed",
+            "description": "Boolean flag, indicating that the user completed the course with a passing grade"
+        },
+        {
             "type": "STRING",
             "name": "ip",
             "description": "Modal value of the IP address from which this user connected, from tracking logs"
@@ -123,12 +128,22 @@
         {
             "type": "FLOAT",
             "name": "grade",
-            "description": "Final grade earned in the course, out of 100 points"
+            "description": "Final grade earned in the course, 0 to 1"
+        },
+        {
+            "type": "FLOAT",
+            "name": "passing_grade",
+            "description": "Passing grade for the course, 0 to 1"
         },
         {
             "type": "TIMESTAMP",
             "name": "start_time",
             "description": "Date of enrollment in the course"
+        },
+        {
+            "type": "TIMESTAMP",
+            "name": "first_event",
+            "description": "Date of first event of user, from tracking logs"
         },
         {
             "type": "TIMESTAMP",
@@ -188,7 +203,7 @@
         {
             "type": "STRING",
             "name": "roles",
-            "description": "Roles played by the user in the course, e.g. instructor, course_staff"
+            "description":  " One of 3 values, 'Student', Staff' or null; null means that user does not have course role or discussion forum role assigned from edX data"
         },
         {
             "type": "INTEGER",
@@ -256,6 +271,26 @@
             "description": "domain of the email address of the user, i.e. what appears after the '@'"
         },
         {
+            "type": "STRING",
+            "name": "language",
+            "description": "modal transcript language"
+        },
+        {
+            "type": "INTEGER",
+            "name": "language_download",
+            "description": "modal transcript language download for any video"
+        },
+        {
+            "type": "INTEGER",
+            "name": "language_nevents",
+            "description": "modal transcript language events"
+        },
+        {
+            "type": "INTEGER",
+            "name": "language_ndiff",
+            "description": "count of different transcript languages"
+        },
+        {
             "type": "INTEGER",
             "name": "ntranscript",
             "description": "Number of video transcript events from tracking logs"
@@ -269,6 +304,16 @@
             "type": "INTEGER",
             "name": "nvideo",
             "description": "Number of video events (of all kinds) from tracking logs"
+        },
+        {
+            "type": "INTEGER",
+            "name": "nvideos_unique_viewed",
+            "description": "Unique Videos viewed per user within a course"
+        },
+        {
+            "type": "FLOAT",
+            "name": "nvideos_total_watched",
+            "description": "Total % of all videos watched per user within a course"
         },
         {
             "type": "INTEGER",
@@ -313,37 +358,57 @@
         {
             "type": "INTEGER", 
             "name": "roles_isBetaTester",
-            "description":  "1 if user is a course beta tester"
+            "description":  "1 if user is a course beta tester; null means user does not have course role assigned"
         }, 
         {
             "type": "INTEGER", 
             "name": "roles_isInstructor",
-            "description":  "1 if user is a course instructor"
+            "description":  "1 if user is a course instructor; null means user does not have course role assigned"
         }, 
         {
             "type": "INTEGER", 
             "name": "roles_isStaff",
-            "description":  "1 if user is course staff"
+            "description":  "1 if user is course staff; null means user does not have course role assigned"
+        }, 
+        {
+            "type": "INTEGER", 
+            "name": "roles_isCCX",
+            "description":  "1 if user is ccx coach; null means user does not have course role assigned"
+        }, 
+        {
+            "type": "INTEGER", 
+            "name": "roles_isFinance",
+            "description":  "1 if user is finance admin; null means user does not have course role assigned"
+        }, 
+        {
+            "type": "INTEGER", 
+            "name": "roles_isLibrary",
+            "description":  "1 if user is library user; null means user does not have course role assigned"
+        }, 
+        {
+            "type": "INTEGER", 
+            "name": "roles_isSales",
+            "description":  "1 if user is sales; null means user does not have course role assigned"
         }, 
         {
             "type": "INTEGER", 
             "name": "forumRoles_isAdmin",
-            "description":  "1 if user is a forum admin"
+            "description":  "1 if user is a forum admin; null means that user does not have a discussion forum role assigned"
         }, 
         {
             "type": "INTEGER", 
             "name": "forumRoles_isCommunityTA",
-            "description":  "1 if user is a community TA"
+            "description":  "1 if user is a community TA; null means that user does not have a discussion forum role assigned"
         }, 
         {
             "type": "INTEGER", 
             "name": "forumRoles_isModerator",
-            "description":  "1 if user is a forum moderator"
+            "description":  "1 if user is a forum moderator; null means that user does not have a discussion forum role assigned"
         }, 
         {
             "type": "INTEGER", 
             "name": "forumRoles_isStudent",
-            "description":  "1 if user is student on the forum"
+            "description":  "1 if user is student on the forum; null means that user does not have a discussion forum role assigned"
         }
     ]
 }

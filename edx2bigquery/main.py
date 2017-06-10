@@ -235,6 +235,18 @@ def setup_sql(param, args, steps, course_id=None):
                                           datedir=param.the_datedir,
                                           use_dataset_latest=param.use_dataset_latest,
                                           )
+
+    if sqlall or 'make_roles' in steps:
+        import make_roles
+        try:
+            make_roles.process_file(course_id, 
+                                    basedir=param.the_basedir,
+                                    datedir=param.the_datedir,
+                                    use_dataset_latest=param.use_dataset_latest,
+                                )
+        except Exception as err:
+            print err
+
     if sqlall or 'sql2bq' in steps:
         import load_course_sql
         try:
@@ -283,6 +295,30 @@ def setup_sql_single(param, course_id, optargs=None):
         traceback.print_exc()
         sys.stdout.flush()
         raise
+
+def fix_gradereport_single(param, course_id, optargs=None):
+
+    print "="*100
+    print "Processing fix_gradereport_single for %s" % course_id
+    sys.stdout.flush()
+
+    try:
+        import fix_missing_grades
+        fix_missing_grades.fix_missing_grades(course_id, 
+                                              getGrades=optargs.getGrades,
+                                              download_only=optargs.download_only,
+                                              course_id_type=optargs.course_id_type,
+                                              org_list=getattr(edx2bigquery_config, 'ORG_LIST', [getattr(edx2bigquery_config, 'ORG', None)] ),
+                                              basedir=param.the_basedir, 
+                                              datedir=param.the_datedir,
+                                              use_dataset_latest=param.use_dataset_latest)
+    except Exception as err:
+        print "===> Error completing fix_gradereport_single on %s, err=%s" % (course_id, str(err))
+        traceback.print_exc()
+        sys.stdout.flush()
+        raise
+
+    
 
 def analyze_course_single(param, course_id, optargs=None):
     '''
@@ -337,6 +373,12 @@ def time_on_task(param, course_id, optargs=None, skip_totals=False, just_do_tota
     print "Updating time_task table for %s" % course_id
     sys.stdout.flush()
 
+    config_parameter_overrides = None
+    if optargs.time_on_task_config:	# e.g. "timeout_short:7,time_on_task_table_name:test_time_on_task_7"
+        config_parameter_overrides = {x[0]: x[1] for x in [y.split(':', 1) for y in optargs.time_on_task_config.split(',')]}
+        print "   Overriding default config with: %s" % json.dumps(config_parameter_overrides, indent=4)
+        sys.stdout.flush()
+
     import make_time_on_task
 
     try:
@@ -349,6 +391,7 @@ def time_on_task(param, course_id, optargs=None, skip_totals=False, just_do_tota
                                                       limit_query_size=param.limit_query_size,
                                                       table_max_size_mb=(param.table_max_size_mb or 800),
                                                       skip_totals=skip_totals,
+                                                      config_parameter_overrides=config_parameter_overrides,
                                                   )
     except Exception as err:
         print "===> Error completing process_course_time_on_task on %s, err=%s" % (course_id, str(err))
@@ -490,6 +533,21 @@ def analyze_forum(param, courses, args):
                                               skip_last_day=args.skip_last_day,
                                               end_date=args.end_date,
                                           )
+
+        except (AssertionError, Exception) as err:
+            print err
+            traceback.print_exc()
+            sys.stdout.flush()
+            raise
+
+def analyze_idv(param, courses, args):
+    import make_idv_features
+    for course_id in get_course_ids(courses):
+        try:
+            make_idv_features.AnalyzeIDV(course_id,
+                                         force_recompute=args.force_recompute,
+                                         use_dataset_latest=param.use_dataset_latest,
+            )
 
         except (AssertionError, Exception) as err:
             print err
@@ -658,6 +716,19 @@ def item_tables(param, courses, args):
             traceback.print_exc()
             sys.stdout.flush()
 
+def irt_report(param, courses, args):
+    import make_irt_report
+    for course_id in get_course_ids(courses):
+        try:
+            make_irt_report.make_irt_report(course_id, 
+                                            force_recompute=args.force_recompute,
+                                            use_dataset_latest=param.use_dataset_latest,
+                                        )
+        except Exception as err:
+            print err
+            sys.stdout.flush()
+            raise
+
 def problem_check(param, courses, args):
     import make_problem_analysis
     for course_id in get_course_ids(courses):
@@ -714,6 +785,37 @@ def make_grading_policy(param, courses, args):
             print "--> course tarfile for %s being pinned to data from dump date %s" % (course_id, pin_date)
         make_grading_policy_table.make_gp_table(course_id, param.the_basedir, param.the_datedir, param.use_dataset_latest, args.verbose, pin_date)
         
+def research(param, courses, args, check_dates=True, stop_on_error=False):
+
+    import make_research_data_tables
+    import rephrase_forum_data
+    for course_id in get_course_ids(courses):
+        try:
+	    make_research_data_tables.ResearchDataProducts(course_id,
+						       basedir=param.the_basedir,
+						       datedir=param.the_datedir,
+						       nskip=(args.nskip or 0),
+						       output_project_id=args.output_project_id or edx2bigquery_config.PROJECT_ID,
+						       output_dataset_id=args.output_dataset_id,
+						       output_bucket=args.output_bucket or edx2bigquery_config.GS_BUCKET,
+						       use_dataset_latest=param.use_dataset_latest,
+						       only_step=param.only_step,
+						       end_date=(param.end_date or param.DEFAULT_END_DATE),
+						       )
+
+            rephrase_forum_data.rephrase_forum_json_for_course(course_id,
+                                                               gsbucket=edx2bigquery_config.GS_BUCKET,
+                                                               basedir=param.the_basedir,
+                                                               datedir=param.the_datedir,
+                                                               use_dataset_latest=param.use_dataset_latest,
+                                                               )
+
+        except Exception as err:
+            print err
+            traceback.print_exc()
+            sys.stdout.flush()
+            if stop_on_error:
+                raise
 
 def person_day(param, courses, args, check_dates=True, stop_on_error=True):
     import make_person_course_day
@@ -733,6 +835,18 @@ def person_day(param, courses, args, check_dates=True, stop_on_error=True):
             if stop_on_error:
                 raise
         
+def pcday_trlang(param, courses, args):
+    import make_person_course_day
+    for course_id in get_course_ids(courses):
+        try:
+            make_person_course_day.compute_person_course_day_trlang_table(course_id, force_recompute=args.force_recompute,
+                                                                      use_dataset_latest=param.use_dataset_latest,
+                                                                      end_date=args.end_date,
+                                                                      )
+        except Exception as err:
+            print err
+            traceback.print_exc()
+            sys.stdout.flush()
 
 def pcday_ip(param, courses, args):
     import make_person_course_day
@@ -823,6 +937,7 @@ def doall(param, course_id, args, stdout=None):
         else:
             daily_logs(param, args, ['logs2gs', 'logs2bq'], course_id, verbose=args.verbose, wait=True)
         pcday_ip(param, course_id, args)	# needed for modal IP
+        pcday_trlang(param, course_id, args)
         person_day(param, course_id, args, stop_on_error=False)
         enrollment_day(param, course_id, args)
 	enrollment_events_table(param, course_id, args)
@@ -851,21 +966,43 @@ def doall(param, course_id, args, stdout=None):
 
 
 def run_nightly_single(param, course_id, args=None):
+
+    print "-"*100
+    print "NIGHTLY PROCESSING %s" % course_id
+    print "-"*100
+
+
+
     try:
-        print "-"*100
-        print "NIGHTLY PROCESSING %s" % course_id
-        print "-"*100
         daily_logs(param, args, ['logs2gs', 'logs2bq'], course_id, verbose=args.verbose, wait=True)
+
+        # Ensure latest problem, video and forum data for person course day
+        try:
+            analyze_problems(param, course_id, args)
+        except Exception as err:
+            print "--> Failed in analyze_problems with err=%s" % str(err)
+            print "--> continuing with nightly anyway"
+        try:
+            analyze_videos(param, course_id, args)
+        except Exception as err:
+            print "--> Failed in analyze_videos with err=%s" % str(err)
+            print "--> continuing with nightly anyway"
+        try:
+            analyze_forum(param, course_id, args)
+        except Exception as err:
+            print "--> Failed in analyze_forum with err=%s" % str(err)
+            print "--> continuing with nightly anyway"
+
         person_day(param, course_id, args, check_dates=False, stop_on_error=False)
         enrollment_day(param, course_id, args)
 	enrollment_events_table(param, course_id, args)
         pcday_ip(param, course_id, args)	# needed for modal IP
+        pcday_trlang(param, course_id, args)
         person_course(param, course_id, args, just_do_nightly=True, force_recompute=True)
         problem_check(param, course_id, args)
         show_answer_table(param, course_id, args)
         analyze_ora(param, course_id, args)
         time_on_task(param, course_id, args, skip_totals=True)
-        analyze_videos(param, course_id, args)
 
     except Exception as err:
         print "="*100
@@ -1189,6 +1326,9 @@ make_uic <course_id> ...    : make the "user_info_combo" file for the specified 
                               Does not import into BigQuery.
                               Accepts the "--year2" flag, to process all courses in the config file's course_id_list.
 
+make_roles <course_id> ...  : make the "roles.csv" file for the specified course_id, from edX's SQL dumps
+
+
 sql2bq <course_id> ...      : load specified course_id SQL files into google storage, and import the user_info_combo and studentmodule
                               data into BigQuery.
                               Also upload course_image.jpg images from the course SQL directories (if image exists) to
@@ -1220,11 +1360,26 @@ analyze_forum <course_id>   : Analyze forum events, generating the forum_events 
 analyze_ora <course_id> ... : Analyze openassessment response problem data in tracking logs, generating the ora_events table as a result.  
                               Uploads the result to google cloud storage and to BigQuery.
 
+analyze_idv <course_id> ... : Analyze engagement of IDV enrollees (and non-IDV enrollees) before end of the course, including
+                              forum, video, and problem activity, up to the point of IDV enrollment (or last ever IDV enrollment
+                              in the course, for non-IDVers).  Also include context about prior activity in other courses,
+                              if course_report_latest.person_course_viewed is available.  Produces idv_analysis table, in each course.
+
 problem_events <course_id>  : Extract capa problem events from the tracking logs, generating the problem_events table as a result.
 
 time_task <course_id> ...   : Update time_task table of data on time on task, based on daily tracking logs, for specified course.
 
 item_tables <course_id> ... : Make course_item and person_item tables, used for IRT analyses.
+
+irt_report <coure_id> ...   : Compute the item_response_theory_report table, which extracts data from item_irt_grm[_R], course_item,
+                              course_problem, and item_reliabilities.  This table is used in the XAnalytics reporting on IRT.
+                              Note that item_reliabilities and item_irt_grm[_R] are computed using external commands, using
+                              Stata and/or R.  If item_irt_grm (produced by Stata) is available, that is used, in preference to
+                              item_irt_grm_R (produced by mirt in R).  This report summarizes, in one place, statistics about
+                              problem difficulty and discrimination, Cronbach's alpha, item-test and item-rest correlations,
+                              average problem raw scores, average problem percent scores, number of unique users attempted.
+                              Standard errors are also provided for difficulty and discrimination.  Requires the IRT tables to
+                              already have been computed.  
 
 staff2bq <staff.csv>        : load staff.csv file into BigQuery; put it in the "courses" dataset.
 
@@ -1282,6 +1437,40 @@ grading_policy <course_id>  : construct the "grading_policy" table, upload to gs
                               the specified course_id's.  Uses pin dates, just as does axis2bq.  Requires course.tar.gz file,
                               from the weekly SQL dumps.
 
+grade_reports <course_id>   : request and download the latest edx instructor grade report from the edx instructor dashboards.
+                              For courses that are self-paced/on-demand, edX does not provide grades for non-verified ID users. 
+                              To fix this issue, this function was created to grab the latest grades for all users from the grade report
+                              in the edX instructor dashboard. This requires the following updates to the following: 
+                              1) edx2bigquery_config.py: 
+                                 PRIVATE_PATH = Location to Private path containing new edx_private_config.py
+                                 ORG_LIST = (Optional, if there are more than one possible org name. ex: ['HarvardX', 'Harvardx', 'VJx'])
+                              2) edx_private_config.py (create new file in PRIVATE_PATH): 
+                                 EDX_USER = edX login
+                                 EDX_PW = edX pw
+                              **NOTE: In order to download grade reports, the edx account must have instructor level access
+
+                              Optional command line args:
+                              --download-only=Do not make a new grade report request, but just download the latest available
+                              --course-id-type=specify either 'opaque' or 'transparent' (default) for the original raw course id
+
+                              sample commands:
+                              a) Request for new grade reports and then download based on list of self-paced/on-demand courses
+                                 After request is made, check if grade report is ready every 5 minutes.
+                                 MAXIMUM_PARALLEL_PROCESSES can be increased to make edX grade report requests in parallel
+                                 Recommend using --parallel command
+                                 self_paced_courses = [ 'ORG/COURSECODE1/TERM', 'ORG/COURSECODE2/TERM', ...] 
+                                 NOTE: Listed courses should be in 'transparent' course id format (shown above)
+                                       This process may take anywhere between 0.5 - 3 hours per course 
+                              edx2bigquery --dataset-latest --course-base-dir=HarvardX-SQL --end-date="2019-01-01" --clist=self_paced_courses --parallel  --course-id-type opaque grade_reports >& LOGS/LOG.gradereports
+
+                              b) Download latest existing grade reports for a list of self-paced/on-demand courses (fast download)
+                                 This command may be used if there is an issue with the request
+                                 for instance, after issuing grade_reports command
+                                 self_paced_courses = [ 'ORG/COURSECODE1/TERM', 'ORG/COURSECODE2/TERM', ...] 
+                                 NOTE: Listed courses should be in 'transparent' course id format (shown above)
+                                       Since only download is requested and no new request is made to edx, this process should be quick
+                              edx2bigquery --dataset-latest --course-base-dir=HarvardX-SQL --end-date="2019-01-01" --clist=self_paced_courses --parallel --download-only --course-id-type opaque grade_reports >& LOGS/LOG.gradereports_download
+
 recommend_pin_dates         : produce a list of recommended "pin dates" for the course axis, based on the specified --listings.  Example:
                               -->  edx2bigquery --clist=all --listings="course_listings.json" --course-base-dir=DATA-SQL recommend_pin_dates
                               These "pin dates" can be defined in edx2bigquery_config in the course_axis_pin_dates dict, to
@@ -1310,6 +1499,21 @@ pcday_ip <course_id> ...    : Compute the pcday_ip_counts table for specified co
                               The "report" command aggregates the individual course_id's pcday_ip tables to produce
                               the courses.global_modal_ip table, which is the modal IP address of each username across 
                               all the courses.
+pcday_trlang <course_id> ...: Compute pcday_trlang_counts table for specified course_id's, based on ingesting
+                              the tracking logs. This is a single table stored in the course's main table and
+                              incrementally updated (by appending) when tracking logs are found. This command is run
+                              as part of doall and nightly commands.
+
+                              This table stores one line per (person, course_id, date, resource_event_data,
+                              resource_event_type) from the tracking logs, where 'resource_event_data' = video
+                              transcript language, and 'resource_event_type' = transcript_language or 
+                              transcript_download. Using this table, another table
+                              language_multi_transcripts is created to capture counts per user per language
+                              and then the modal language is computed per user.
+
+                              The "report" command aggregates the individual course_id's pcday_trlang_counts tables
+                              to produce a courses.global_modal_lang table. This table represents the modal
+                              language per user across all courses, based on transcript language events.
 
 person_day <course_id> ...  : Compute the person_course_day (pcday) for the specified course_id's, based on 
                               processing the course's daily tracking log table data.
@@ -1387,6 +1591,9 @@ get_table_info <dataset>    : dump meta-data information about the specified dat
 delete_empty_tables         : delete empty tables form the tracking logs dataset for the specified course_id's, from BigQuery.
             <course_id> ...   Accepts the "--year2" flag, to process all courses in the config file's course_id_list.
 
+delete_tables               : delete specified table form the datasets for the specified course_id's, from BigQuery.
+  --table <table_id> <cid>    Will skip if table doesn't exist.
+
 delete_stats_tables         : delete stats_activity_by_day tables 
             <course_id> ...   Accepts the "--year2" flag, to process all courses in the config file's course_id_list.
 
@@ -1407,6 +1614,8 @@ check_for_duplicates        : check list of courses for duplicates
     parser.add_argument("--clist-from-missing-table", type=str, help="iterate command over list of course_id's missing specified table")
     parser.add_argument("--force-recompute", help="force recomputation", action="store_true")
     parser.add_argument("--dataset-latest", help="use the *_latest SQL dataset", action="store_true")
+    parser.add_argument("--download-only", help="For grade_reports command when downloading grades through edxapi, get latest only without making a request", action="store_true")
+    parser.add_argument("--course-id-type", type=str, help="Specify 'transparent' or 'opaque' course id format type. When downloading grades through edxapi, specify that course id format is the old legacy format (e.g.: HarvardX/course/term) or new format (e.g.: course-v1:HarvardX+course+term" )
     parser.add_argument("--latest-sql-dir", help="use the most recent SQL data directory (for person_course)", action="store_true")
     parser.add_argument("--skiprun", help="for external command, print, and skip running", action="store_true")
     parser.add_argument("--external", help="run specified command as being an external command", action="store_true")
@@ -1444,6 +1653,7 @@ check_for_duplicates        : check list of courses for duplicates
     parser.add_argument("--logfn-keepdir", help="keep directory name in tracking which tracking logs have been loaded already", action="store_true")
     parser.add_argument("--skip-last-day", help="skip last day of tracking log data in processing pcday, to avoid partial-day data contamination", action="store_true")
     parser.add_argument("--gzip", help="compress the output file (e.g. for get_course_data)", action="store_true")
+    parser.add_argument("--time-on-task-config", type=str, help="time-on-task computation parameters for overriding default config, as string of comma separated values")
     parser.add_argument('courses', nargs = '*', help = 'courses or course directories, depending on the command')
     parser.add_argument('--remove-pii', help = 'Removes PII during Waldofy and Rephrase Logs steps - must be called individually', action="store_true")
     
@@ -1578,10 +1788,29 @@ check_for_duplicates        : check list of courses for duplicates
             print "-"*100
             try:
                 daily_logs(param, args, ['logs2gs', 'logs2bq'], course_id, verbose=args.verbose, wait=True)
+
+        # Ensure latest problem, video and forum data for person course day
+                try:
+                    analyze_problems(param, course_id, args)
+                except Exception as err:
+                    print "--> Failed in analyze_problems with err=%s" % str(err)
+                    print "--> continuing with nightly anyway"
+                try:
+                    analyze_videos(param, course_id, args)
+                except Exception as err:
+                    print "--> Failed in analyze_videos with err=%s" % str(err)
+                    print "--> continuing with nightly anyway"
+                try:
+                    analyze_forum(param, course_id, args)
+                except Exception as err:
+                    print "--> Failed in analyze_forum with err=%s" % str(err)
+                    print "--> continuing with nightly anyway"
+
                 person_day(param, course_id, args, check_dates=False)
                 enrollment_day(param, course_id, args)
                 enrollment_events_table(param, course_id, args)
                 pcday_ip(param, course_id, args)	# needed for modal IP
+                pcday_trlang(param, course_id, args)
                 person_course(param, course_id, args, just_do_nightly=True, force_recompute=True)
                 problem_check(param, course_id, args)
                 analyze_ora(param, course_id, args)
@@ -1591,6 +1820,9 @@ check_for_duplicates        : check list of courses for duplicates
                 traceback.print_exc()
 
     elif (args.command=='make_uic'):
+        setup_sql(param, args, args.command)
+
+    elif (args.command=='make_roles'):
         setup_sql(param, args, args.command)
                                               
     elif (args.command=='sql2bq'):
@@ -1640,6 +1872,23 @@ check_for_duplicates        : check list of courses for duplicates
         else:
             courses = get_course_ids(args)
             run_parallel_or_serial(analyze_course_single, param, courses, args, parallel=args.parallel)
+
+    elif (args.command=='grade_reports'):
+
+        courses = get_course_ids(args)
+
+        # Import instance of edxapi, in order to connect to edX instructor dashboard
+        try:
+            import edxapi
+        except:
+            from edxcut import edxapi
+        import time
+        getGrades = edxapi.edXapi(username=edx2bigquery_config.EDX_USER, password=edx2bigquery_config.EDX_PW )
+        args.getGrades = getGrades
+        time.sleep( 10 )
+
+        run_parallel_or_serial(fix_gradereport_single, param, courses, optargs=args, parallel=args.parallel)
+
 
     elif (args.command=='mongo2user_info'):
         import fix_missing_user_info
@@ -1765,6 +2014,23 @@ check_for_duplicates        : check list of courses for duplicates
                 print err
                 raise
 
+    elif (args.command=='delete_tables'):
+        import bqutil
+        tablename = args.table
+        for course_id in get_course_ids(args):
+            try:
+                dataset = bqutil.course_id2dataset(course_id, use_dataset_latest=param.use_dataset_latest)
+                the_table = '%s.%s' % (dataset, tablename)
+                tinfo = bqutil.get_bq_table_info(dataset, tablename) or None
+                if tinfo is not None:
+                    print "   Deleting %s.%s" % (dataset, tablename)
+                    bqutil.delete_bq_table(dataset, tablename)
+                else:
+                    print "   Missing %s.%s -- skipping" % (dataset, tablename)
+            except Exception as err:
+                print err
+                raise
+
     elif (args.command=='daily_logs'):
         daily_logs(param, args, args.command)
 
@@ -1830,6 +2096,10 @@ check_for_duplicates        : check list of courses for duplicates
         courses = get_course_ids(args)
         run_parallel_or_serial(analyze_forum, param, courses, args, parallel=args.parallel)
 
+    elif (args.command=='analyze_idv'):
+        courses = get_course_ids(args)
+        run_parallel_or_serial(analyze_idv, param, courses, args, parallel=args.parallel)
+
     elif (args.command=='problem_check'):
         problem_check(param, args, args)
 
@@ -1854,6 +2124,10 @@ check_for_duplicates        : check list of courses for duplicates
         courses = get_course_ids(args)
         run_parallel_or_serial(item_tables, param, courses, args, parallel=args.parallel)
 
+    elif (args.command=='irt_report'):
+        courses = get_course_ids(args)
+        run_parallel_or_serial(irt_report, param, courses, args, parallel=args.parallel)
+
     elif (args.command=='recommend_pin_dates'):
         import make_axis_pin_dates_from_listings
         courses = get_course_ids(args)
@@ -1869,6 +2143,9 @@ check_for_duplicates        : check list of courses for duplicates
 
     elif (args.command=='pcday_ip'):
         pcday_ip(param, args, args)
+
+    elif (args.command=='pcday_trlang'):
+        pcday_trlang(param, args, args)
 
     elif (args.command=='person_day'):
         # person_day(param, args, args)
@@ -1896,6 +2173,11 @@ check_for_duplicates        : check list of courses for duplicates
                                                only_step=param.only_step,
                                                end_date=(param.end_date or param.DEFAULT_END_DATE),
                                                )
+
+    elif (args.command=='research'):
+
+        courses = get_course_ids(args)
+        run_parallel_or_serial(research, param, courses, args, parallel=args.parallel)
 
     elif (args.command=='combinepc'):
         import make_combined_person_course

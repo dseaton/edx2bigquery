@@ -67,7 +67,9 @@ import copy
 from path import path
 from collections import OrderedDict, defaultdict
 from check_schema_tracking_log import schema2dict, check_schema
-from load_course_sql import find_course_sql_dir
+from load_course_sql import find_course_sql_dir, get_course_sql_dirdate
+
+csv.field_size_limit(13107200)
 
 #-----------------------------------------------------------------------------
 
@@ -90,6 +92,7 @@ class PersonCourse(object):
         self.logmsg = []
         self.nskip = nskip
         self.skip_geoip = skip_geoip
+        self.sql_dir_date = get_course_sql_dirdate( course_id=course_id, lfp=self.course_dir, datedir=course_dir_date, use_dataset_latest=use_dataset_latest or use_latest_sql_dir )
 
         if not self.cdir.exists():
             print "Oops: missing directory %s!" % self.cdir
@@ -213,7 +216,28 @@ class PersonCourse(object):
                     dst[key] = mapfun(src[val])
     
     #-----------------------------------------------------------------------------
-    
+
+    def load_passing_grade(self):
+   
+        tablename = 'grading_policy'
+
+        the_sql = '''
+            SELECT FIRST(overall_cutoff_for_pass) as overall_cutoff_for_pass
+            FROM [{dataset}.grading_policy]
+        '''.format(**self.sql_parameters)
+
+        # make sure the studentmodule table exists; if not, skip this
+        tables = bqutil.get_list_of_table_ids(self.dataset)
+        if not tablename in tables:
+            self.log("--> No grading_policy table for %s" % self.course_id)
+            setattr(self, tablename, {'data': [], 'data_by_key': {}})
+            return
+
+        self.log("Loading %s from BigQuery" % tablename)
+        self.grading_policy = bqutil.get_bq_table(self.dataset, tablename, the_sql, key={'name': 'overall_cutoff_for_pass'},
+                                                depends_on=[ '%s.grading_policy' % self.dataset ],
+                                                force_query=self.force_recompute_from_logs, logger=self.log)
+
     def get_nchapters_from_course_metainfo(self):
         '''
         Determine the number of chapters from the course_metainfo table, which is computed
@@ -315,7 +339,37 @@ class PersonCourse(object):
             raise Exception('no user_info_combo')
 
         self.uicdat = uicdat
-    
+
+        try:
+            # initialize
+            passing_grade = None
+            overall_cutoff = None
+
+            self.load_passing_grade()
+            tkeys = self.grading_policy['data_by_key'].items()[0][1].keys()
+            import re
+            # Regex is required since overall_cutoff variables vary 
+            # ( e.g.: overall_cutoff_for_great_work, overall_cutoff_for_passing )
+            pattern = r'(overall_cutoff.*)'
+            regex = re.compile(pattern)
+            for tk in tkeys:
+                m = regex.search(tk)
+                if m is not None:
+                    overall_cutoff = m.group(1)
+                    break
+            if overall_cutoff is not None:
+	        passing_grade = self.grading_policy['data_by_key'].items()[0][1].get(overall_cutoff, None)
+	        if passing_grade is not None:
+ 	            passing_grade = float(passing_grade)
+            print 'Passing grade = %s' % passing_grade
+
+        except Exception as err:
+            self.log("Error %s getting passing grade!" % str(err))
+            passing_grade = None
+
+        grade_dash_cnt = 0 # Initialize count for edx instructor grades
+        grade_cert_cnt = 0 # Initialize count for edx weekly data dump grades
+
         for key, uicent in uicdat.iteritems():
             pcent = OrderedDict()
             self.pctab[key] = pcent			# key = username
@@ -339,17 +393,70 @@ class PersonCourse(object):
         
             pcent['registered'] = True	# by definition
         
+            # Set passing grade for course; else, assign null to indicate error
+            if passing_grade is not None:
+                pcent['passing_grade'] = float( passing_grade )
+
+            # Perform Grade corrections using certificates and edX instructor dashboard data (if it exists)
+            pcent['completed'] = False
+            import dateutil.parser
+	    grade_cert = uicent.get('certificate_grade', None)
+	    grade_cert_date = dateutil.parser.parse( self.sql_dir_date ) if self.sql_dir_date is not None else None
+            grade_dash = uicent.get('edxinstructordash_Grade', None)
+            grade_dash_date = uicent.get('edxinstructordash_Grade_timestamp', None)
+            # If grade dash exists and grade cert exists, then check which one is the newest
+            if grade_dash is not None and grade_dash_date is not None and\
+               grade_cert is not None and grade_cert_date is not None:
+
+                # Use latest directory data as time stamp for edx weekly data dump
+                grade_dash_date = dateutil.parser.parse( grade_dash_date )
+                # Grade from edx instructor dash is newer than latest week folder, use edx instructor dash grade
+                if grade_dash_date > grade_cert_date:
+
+                    #print "Grade from edx instructor dash is %s (newer) than cert grade %s" % (grade_dash_date, grade_cert_date)
+                    grade_dash_cnt += 1
+		    pcent['grade'] = grade_dash
+
+                # Grade from certificates file is newer
+                elif grade_dash_date <= grade_cert_date:
+                    grade_cert_cnt += 1
+                    #print "Grade from certificate is newer (%s) than edx instructor dash (%s)" % (grade_cert_date, grade_dash_date)
+                    pcent['grade'] = grade_cert
+
+            # If grade dash exists, but cert grade doesn't, then use grade dash
+            elif grade_dash is not None and grade_dash_date is not None and grade_cert is None:
+
+                    grade_dash_cnt += 1
+                    #print "Grade from certificate is missing, so using edx instructor dash grade from (%s)" % (grade_dash_date)
+		    pcent['grade'] = grade_dash
+
+            else:
+                # Default to using certificate file data
+                grade_cert_cnt += 1
+                pcent['grade'] = grade_cert
+
+            current_grade = pcent.get('grade', None)
+            # Set if current grade exists
+            if current_grade is not None and passing_grade is not None:
+                current_grade = float(pcent['grade'])
+                if current_grade >= passing_grade:
+		    pcent['completed'] = True
+
             # derived entries, from SQL data
         
             # certificate status can be [ "downloadable", "notpassing", "unavailable" ]
             # if uicent.get('certificate_status', '') in [ "downloadable","unavailable" ]:
             if uicent.get('certificate_status', '') in [ "downloadable" ]:
                 pcent['certified'] = True
+                pcent['completed'] = True
             else:
                 pcent['certified'] = False
         
             # email domain
             pcent['email_domain'] = uicent.get('email').split('@')[1]
+
+        # Grades Summary
+        print "%s Grades loaded from Certificates file, %s Grades loaded from edX instructor Dashboard" % (grade_cert_cnt, grade_dash_cnt)
 
     def compute_second_phase(self):
     
@@ -430,26 +537,41 @@ class PersonCourse(object):
 
         self.load_pc_day_totals()	# person-course-day totals contains all the aggregate nevents, etc.
 
+        # Video Watched
+        self.load_pc_video_watched()
+
+        # Modal IP
         skip_modal_ip = skip_modal_ip or self.skip_geoip
 
         if not skip_modal_ip:
             self.load_modal_ip()
+
+	# Modal language
+        self.load_modal_language()
 
         pcd_fields = ['nevents', 'ndays_act', 'nprogcheck', 'nshow_answer', 'nvideo', 'nproblem_check', 
                       ['nforum', 'nforum_events'], 'ntranscript', 'nseq_goto',
                       ['nvideo', 'nplay_video'],
                       'nseek_video', 'npause_video', 'avg_dt', 'sdv_dt', 'max_dt', 'n_dt', 'sum_dt']
 
+        pc_lang_fields = ['language', 'language_download', 'language_nevents', 'language_ndiff']
+
         nmissing_ip = 0
         nmissing_ip_cert = 0
+	langadded = 0
+	nmissing_lang = 0
         for key, pcent in self.pctab.iteritems():
+            uid = str(pcent['user_id'])
             username = pcent['username']
 
+	    for pcdl in pc_lang_fields:
+	        pcent[ pcdl ] = None
             # pcent['nevents'] = self.pc_nevents['data_by_key'].get(username, {}).get('nevents', None)
 
             if not skip_last_event:
                 # le = self.pc_last_event['data_by_key'].get(username, {}).get('last_event', None)
                 le = self.pc_day_totals['data_by_key'].get(username, {}).get('last_event', None)
+                fe = self.pc_day_totals['data_by_key'].get(username, {}).get('first_event', None)
                 if le is not None and le:
                     try:
                         le = str(datetime.datetime.utcfromtimestamp(float(le)))
@@ -457,6 +579,27 @@ class PersonCourse(object):
                         self.log('oops, last event cannot be turned into a time; le=%s, username=%s' % (le, username))
                     pcent['last_event'] = le
 
+                if fe is not None and fe:
+                    try:
+                        fe = str(datetime.datetime.utcfromtimestamp(float(fe)))
+                    except Exception as err:
+                        self.log('oops, last event cannot be turned into a time; le=%s, username=%s' % (fe, username))
+                    pcent['first_event'] = fe
+
+
+            # Copy standard person_course_day data to Person Course (do this before other cases, which may fail and stop the copying)
+            for pcdf in pcd_fields:
+                self.copy_from_bq_table(self.pc_day_totals, pcent, username, pcdf)
+
+            # Video Watched
+            try:
+	        self.copy_from_bq_table(self.person_course_video_watched, pcent, uid, 'n_unique_videos_watched', new_field='nvideos_unique_viewed')
+	        self.copy_from_bq_table(self.person_course_video_watched, pcent, uid, 'fract_total_videos_watched', new_field='nvideos_total_watched')
+
+            except Exception as err:
+                pass
+
+	    # Copy Modal IP data
             if not skip_modal_ip:
                 self.copy_from_bq_table(self.pc_modal_ip, pcent, username, 'modal_ip', new_field='ip')
                 if self.pc_modal_ip['data_by_key'].get(username, {}).get('source', None)=='missing':
@@ -464,13 +607,21 @@ class PersonCourse(object):
                     if pcent.get('certified'):
                         nmissing_ip_cert += 1
 
-            for pcdf in pcd_fields:
-                self.copy_from_bq_table(self.pc_day_totals, pcent, username, pcdf)
+	    try:
+	        for pcdl in pc_lang_fields:
+	            pcent[ pcdl ] = self.course_modal_language['data_by_key'].get(username, {}).get( pcdl, None)
+	        langadded += 1
+	    except Exception as err:
+	        nmissing_lang += 1
+                pass
 
         if not skip_modal_ip:
             self.log("--> modal_ip's number missing = %d" % nmissing_ip)
             if nmissing_ip_cert:
                 self.log("==> WARNING: missing %d ip addresses for users with certified=True!" % nmissing_ip_cert)
+
+        self.log("Languages added: %s" % ( langadded ))
+        self.log("Languages not added: %s" % ( nmissing_lang ))
 
     def compute_fourth_phase(self):
     
@@ -648,13 +799,17 @@ class PersonCourse(object):
         
         roles = self.load_csv(rfn, 'user_id', keymap=int)
 
-        fields = ["roles_isBetaTester","roles_isInstructor",
-                  "roles_isStaff","forumRoles_isAdmin","forumRoles_isCommunityTA",
+        fields = ["roles", "roles_isBetaTester","roles_isInstructor",
+                  "roles_isStaff", "roles_isCCX", "roles_isFinance", "roles_isLibrary", "roles_isSales",
+                  "forumRoles_isAdmin","forumRoles_isCommunityTA",
                   "forumRoles_isModerator","forumRoles_isStudent"]
 
         def mapfun(x):
             if x or x==0:
-                return int(float(x))
+                if type(x) == float or type(x) == int:
+                   return int(float(x))
+                else:
+                   return x
             return None
 
         nroles = 0
@@ -667,8 +822,14 @@ class PersonCourse(object):
                 nmissing += 1
                 continue
 
-            self.copy_fields(roles[uid], pcent, {x:x for x in fields}, mapfun=mapfun)
-            nroles += 1
+            try:
+                self.copy_fields(roles[uid], pcent, {x:x for x in fields}, mapfun=mapfun)
+                nroles += 1
+
+	    except Exception as err:
+                print str(err)
+                #self.log( "---> Cannot add roles data... Skipping" )
+		continue
 
         if self.verbose and False:
             self.log("--> Err! missing roles information for uid=%s" % missing_uids)
@@ -830,11 +991,38 @@ class PersonCourse(object):
 		self.log( "===> WARNING: Missing table %s for %s" % ( tablename, self.course_id ) )
 		setattr(self, tablename, {'data': [], 'data_by_key': {}})
 		return
-
+        sql = '''
+	      SELECT *
+              FROM [{dataset}.person_enrollment_verified]
+              '''.format(**self.sql_parameters)
         self.log( "Loading %s from BigQuery" % tablename )
-        self.person_enrollment_verified = bqutil.get_bq_table( self.dataset, tablename, sql=None, key={'name': 'user_id'},
-                                                       depends_on=[ '%s.person_enrollment_verified' % self.dataset ],
-                                                       force_query=self.force_recompute_from_logs, logger=self.log)
+        try:
+            setattr(self, tablename, bqutil.get_bq_table( self.dataset, tablename, sql=sql, key={'name': 'user_id'},
+                                                                   depends_on=[ '%s.person_enrollment_verified' % self.dataset ],
+                                                                   force_query=self.force_recompute_from_logs, logger=self.log) )
+        except Exception as err:
+            self.log("[load_enrollment_verified] Failed, with error=%s" % str(err))
+
+    def load_pc_video_watched(self):
+
+        tables = bqutil.get_list_of_table_ids(self.dataset)     
+        tablename = 'person_course_video_watched'
+	if not tablename in tables:
+		self.log( "===> WARNING: Missing table %s for %s" % ( tablename, self.course_id ) )
+		setattr(self, tablename, {'data': [], 'data_by_key': {}})
+		return
+        sql = '''
+	      SELECT *
+              FROM [{dataset}.person_course_video_watched]
+              '''.format(**self.sql_parameters)
+        self.log( "Loading %s from BigQuery" % tablename )
+        try:
+            setattr(self, tablename, bqutil.get_bq_table( self.dataset, tablename, sql=sql, key={'name': 'user_id'},
+                                                                   depends_on=[ '%s.person_course_video_watched' % self.dataset ],
+                                                                   force_query=self.force_recompute_from_logs, logger=self.log) )
+        except Exception as err:
+            self.log("[load_enrollment_verified] Failed, with error=%s" % str(err))
+
 
     def load_pc_day_totals(self):
         '''
@@ -862,6 +1050,7 @@ class PersonCourse(object):
                 sum(nseq_goto) as nseq_goto,
                 sum(nseek_video) as nseek_video,
                 sum(npause_video) as npause_video,
+                MIN(first_event) as first_event,
                 MAX(last_event) as last_event,
                 AVG(avg_dt) as avg_dt,
                 sqrt(sum(sdv_dt*sdv_dt * n_dt)/sum(n_dt)) as sdv_dt,
@@ -1028,6 +1217,18 @@ class PersonCourse(object):
         setattr(self, tablename, bqutil.get_bq_table(self.dataset, tablename, the_sql, key={'name': 'username'},
                                                      force_query=self.force_recompute_from_logs, logger=self.log))
 
+    def load_modal_language(self):
+        '''
+	Compute the modal transcript language and multi_language_table, based on tracking logs
+        using the canonical daily dataset 'pcday_trlang_counts
+        '''
+        tables = bqutil.get_list_of_table_ids(self.dataset)
+        table = 'pcday_trlang_count'
+
+
+        self.make_course_specific_multilang_table()	# make course-specific mult-language table
+        self.make_course_specific_modallang_table()	# make course-specific modal language table
+
     def load_modal_ip(self):
         '''
         Compute the modal IP (the IP address most used by the learner), based on the tracking logs.
@@ -1146,6 +1347,114 @@ class PersonCourse(object):
                                                      newer_than=datetime.datetime(2015, 1, 18, 0, 0),
                                                      force_query=self.force_recompute_from_logs, logger=self.log))
 
+    def make_course_specific_modallang_table(self):
+        '''
+	Make course-specific modal transcript language table, based on local multi transcript language table => language_multi_transcripts
+        This data will be joined with Person Course, where 'language' indicates the modal
+        or most frequently used language for a particular user. 
+        This table should contain users and language, showing up once per course
+        '''
+
+        tablename = 'course_modal_language'
+        SQL = '''
+		SELECT
+		  username,
+		  course_id,
+		  resource,
+		  resource_event_data as language,
+		  transcript_download as language_download,
+		  n_events as language_nevents,
+		  n_diff_lang as language_ndiff,
+		FROM (
+		  SELECT
+		    username,
+		    course_id,
+		    resource,
+		    resource_event_data,
+		    transcript_download,
+		    n_events,
+		    last_time_used_lang,
+		    MAX(last_time_used_lang) OVER (PARTITION BY username ) AS max_time_used_lang,
+		    n_diff_lang
+		  FROM [{dataset}.language_multi_transcripts]
+		  WHERE
+		    rank_num = 1
+		  ORDER BY
+		    username ASC )
+		WHERE
+		  last_time_used_lang = max_time_used_lang
+
+              '''.format(**self.sql_parameters)
+
+
+        self.log("Loading %s from BigQuery" % tablename)
+        setattr(self, tablename, bqutil.get_bq_table(self.dataset, tablename, SQL, key={'name': 'username'},
+                                                     force_query=self.force_recompute_from_logs, 
+                                                     depends_on=[ '%s.language_multi_transcripts' % self.dataset ],
+                                                     logger=self.log))
+
+
+    def make_course_specific_multilang_table(self):
+        '''
+	Make a course-specific multi transcript language table, based on local pcday_trlang_counts table
+        This table can be used to find out what languages a user has interacted with through
+        the video transcript events
+        '''
+        tablename = 'language_multi_transcripts'
+
+        SQL = '''
+
+		SELECT
+		  username,
+		  course_id,
+		  resource,
+		  resource_event_data,
+		  SUM(transcript_download) as transcript_download,
+		  SUM(n_events) AS n_events,
+		  LAST(last_time_used_lang) AS last_time_used_lang,
+		  COUNT(resource_event_data) OVER (PARTITION BY username ) AS n_diff_lang,
+		  RANK() OVER (PARTITION BY username ORDER BY n_events DESC) AS rank_num,
+		FROM (
+		  SELECT
+		    username,
+		    course_id,
+		    resource,
+		    resource_event_data,
+		    resource_event_type,
+		    SUM(CASE
+			WHEN resource_event_type = 'transcript_download' THEN 1
+			ELSE 0 END) AS transcript_download,
+		    SUM(langcount) AS n_events,
+		    LAST(last_time) AS last_time_used_lang
+		  FROM
+		    [{dataset}.pcday_trlang_counts]
+		  GROUP BY
+		    username,
+		    course_id,
+		    resource,
+		    resource_event_data,
+		    resource_event_type,
+		  ORDER BY
+		    username ASC )
+		GROUP BY
+		  username,
+		  course_id,
+		  resource,
+		  resource_event_data,
+		ORDER BY
+		  username,
+		  rank_num ASC # END - Ranking Table
+
+
+              '''.format(**self.sql_parameters)
+
+
+        self.log("Loading %s from BigQuery" % tablename)
+        setattr(self, tablename, bqutil.get_bq_table(self.dataset, tablename, SQL, key={'name': 'username'},
+                                                     force_query=self.force_recompute_from_logs, 
+                                                     depends_on=[ '%s.pcday_trlang_counts' % self.dataset ],
+                                                     newer_than=datetime.datetime(2016, 10, 21, 23, 00),
+                                                     logger=self.log))
 
     def make_course_specific_modal_ip_table(self):
         '''
